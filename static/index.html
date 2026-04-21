@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Realtime Speech Demo</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      }
+
+      body {
+        margin: 0;
+        background: #0f172a;
+        color: #e2e8f0;
+      }
+
+      .container {
+        max-width: 1000px;
+        margin: 0 auto;
+        padding: 24px;
+      }
+
+      .header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+      }
+
+      .badge {
+        border: 1px solid #334155;
+        border-radius: 999px;
+        padding: 8px 14px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        background: #111827;
+      }
+
+      .podcast-icon {
+        width: 34px;
+        height: 34px;
+        border-radius: 999px;
+        display: grid;
+        place-items: center;
+        background: #1e293b;
+        transition: all 0.2s ease;
+      }
+
+      .podcast-icon.active {
+        background: #9333ea;
+        box-shadow: 0 0 0 0 rgba(168, 85, 247, 0.7);
+        animation: pulse 1.2s infinite;
+      }
+
+      @keyframes pulse {
+        0% {
+          box-shadow: 0 0 0 0 rgba(168, 85, 247, 0.65);
+        }
+        70% {
+          box-shadow: 0 0 0 18px rgba(168, 85, 247, 0);
+        }
+        100% {
+          box-shadow: 0 0 0 0 rgba(168, 85, 247, 0);
+        }
+      }
+
+      .cards {
+        margin-top: 22px;
+        display: grid;
+        gap: 12px;
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      }
+
+      .card {
+        padding: 14px;
+        border-radius: 12px;
+        border: 1px solid #334155;
+        background: #111827;
+      }
+
+      .card small {
+        color: #94a3b8;
+      }
+
+      .card h3 {
+        margin: 10px 0 0;
+      }
+
+      .grid {
+        margin-top: 22px;
+        display: grid;
+        grid-template-columns: 1.2fr 1fr;
+        gap: 14px;
+      }
+
+      .panel {
+        border: 1px solid #334155;
+        background: #111827;
+        border-radius: 12px;
+        padding: 14px;
+      }
+
+      #transcripts {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        max-height: 360px;
+        overflow: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      #transcripts .empty-state {
+        color: #475569;
+        font-size: 0.875rem;
+        text-align: center;
+        padding: 32px 0;
+      }
+
+      #transcripts li.final {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 8px;
+        padding: 10px 12px;
+        border-radius: 8px;
+        background: #0f172a;
+        border: 1px solid #1e293b;
+        font-size: 0.9rem;
+      }
+
+      #transcripts li.final .tx-text {
+        flex: 1;
+      }
+
+      #transcripts li.final .tx-meta {
+        font-size: 0.75rem;
+        color: #64748b;
+        white-space: nowrap;
+      }
+
+      #transcripts li.partial {
+        padding: 10px 12px;
+        border-radius: 8px;
+        background: #1e1b4b;
+        border: 1px solid #3730a3;
+        color: #a5b4fc;
+        font-size: 0.9rem;
+        font-style: italic;
+      }
+
+      #latencyChart {
+        width: 100%;
+        height: 280px;
+      }
+
+      .muted {
+        color: #94a3b8;
+      }
+
+      @media (max-width: 850px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="container">
+      <section class="header">
+        <div>
+          <h1>Realtime Speech Demo Dashboard</h1>
+          <p class="muted">
+            Live transcript and latency monitor for audio streamed to Google
+            Speech-to-Text v2.
+          </p>
+        </div>
+        <div class="badge">
+          <div id="podcastIcon" class="podcast-icon">🎙️</div>
+          <div>
+            <div id="statusLabel">Idle</div>
+            <small class="muted">Audio flow indicator</small>
+          </div>
+        </div>
+      </section>
+
+      <section class="cards">
+        <article class="card"><small>Average</small><h3 id="avgMs">0 ms</h3></article>
+        <article class="card"><small>P50</small><h3 id="p50Ms">0 ms</h3></article>
+        <article class="card"><small>P95</small><h3 id="p95Ms">0 ms</h3></article>
+        <article class="card"><small>Transcripts</small><h3 id="txCount">0</h3></article>
+      </section>
+
+      <section class="grid">
+        <article class="panel">
+          <h3>Latency Trend (ms)</h3>
+          <svg id="latencyChart" viewBox="0 0 800 280" preserveAspectRatio="none">
+            <polyline
+              id="latencyLine"
+              fill="none"
+              stroke="#a855f7"
+              stroke-width="3"
+              points=""
+            ></polyline>
+          </svg>
+          <p class="muted">Updated from monitor events in real time.</p>
+        </article>
+
+        <article class="panel">
+          <h3>Transcript Feed</h3>
+          <ul id="transcripts"></ul>
+        </article>
+      </section>
+    </main>
+
+    <script>
+      const podcastIcon = document.getElementById('podcastIcon');
+      const statusLabel = document.getElementById('statusLabel');
+      const avgMs = document.getElementById('avgMs');
+      const p50Ms = document.getElementById('p50Ms');
+      const p95Ms = document.getElementById('p95Ms');
+      const txCount = document.getElementById('txCount');
+      const transcriptList = document.getElementById('transcripts');
+      const latencyLine = document.getElementById('latencyLine');
+
+      let lastEventAt = 0;
+      let samples = [];
+      let partialItem = null;
+
+      function ensureEmptyState() {
+        const hasEntries = [...transcriptList.children].some(el => !el.classList.contains('empty-state'));
+        let empty = transcriptList.querySelector('.empty-state');
+        if (!hasEntries && !empty) {
+          empty = document.createElement('li');
+          empty.className = 'empty-state';
+          empty.textContent = 'Waiting for transcripts…';
+          transcriptList.appendChild(empty);
+        } else if (hasEntries && empty) {
+          empty.remove();
+        }
+      }
+
+      function updateIndicator() {
+        const active = Date.now() - lastEventAt < 1500;
+        podcastIcon.classList.toggle('active', active);
+        statusLabel.textContent = active ? 'Live audio flowing' : 'Idle';
+      }
+
+      function updateMetrics(metrics) {
+        avgMs.textContent = `${metrics.avg_ms || 0} ms`;
+        p50Ms.textContent = `${metrics.p50_ms || 0} ms`;
+        p95Ms.textContent = `${metrics.p95_ms || 0} ms`;
+        txCount.textContent = `${metrics.transcript_count || 0}`;
+        samples = (metrics.recent_ms || []).slice(-100);
+        drawLatency();
+      }
+
+      function drawLatency() {
+        if (!samples.length) {
+          latencyLine.setAttribute('points', '');
+          return;
+        }
+
+        const width = 800;
+        const height = 280;
+        const max = Math.max(...samples, 1);
+        const min = Math.min(...samples, 0);
+        const range = Math.max(1, max - min);
+
+        const points = samples.map((value, index) => {
+          const x = (index / Math.max(1, samples.length - 1)) * width;
+          const normalized = (value - min) / range;
+          const y = height - normalized * (height - 20) - 10;
+          return `${x.toFixed(2)},${y.toFixed(2)}`;
+        });
+
+        latencyLine.setAttribute('points', points.join(' '));
+      }
+
+      function prependTranscript(event) {
+        if (!event.is_final) {
+          if (!partialItem) {
+            partialItem = document.createElement('li');
+            partialItem.className = 'partial';
+            transcriptList.prepend(partialItem);
+          }
+          partialItem.textContent = event.transcript;
+          ensureEmptyState();
+          return;
+        }
+
+        if (partialItem) {
+          partialItem.remove();
+          partialItem = null;
+        }
+
+        if (!event.transcript.trim()) return;
+
+        const item = document.createElement('li');
+        item.className = 'final';
+        item.innerHTML = `<span class="tx-text">${event.transcript}</span><span class="tx-meta">${event.latency_ms} ms</span>`;
+        transcriptList.prepend(item);
+
+        while (transcriptList.children.length > 30) {
+          transcriptList.removeChild(transcriptList.lastChild);
+        }
+
+        ensureEmptyState();
+      }
+
+      function connectMonitor() {
+        const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+        const socket = new WebSocket(`${scheme}://${location.host}/ws/monitor`);
+
+        socket.onopen = () => {
+          setInterval(() => {
+            if (socket.readyState === WebSocket.OPEN) {
+              socket.send('ping');
+            }
+          }, 5000);
+        };
+
+        socket.onmessage = (message) => {
+          const event = JSON.parse(message.data);
+          console.log('[monitor]', event.type, event);
+          if (event.type === 'transcript') {
+            lastEventAt = Date.now();
+            prependTranscript(event);
+            if (event.metrics) {
+              updateMetrics(event.metrics);
+            }
+          }
+
+          if (event.type === 'metrics' && event.metrics) {
+            updateMetrics(event.metrics);
+          }
+        };
+
+        socket.onerror = (err) => console.error('[monitor] ws error', err);
+        socket.onclose = (ev) => {
+          console.warn('[monitor] ws closed', ev.code, ev.reason);
+          setTimeout(connectMonitor, 1200);
+        };
+      }
+
+      setInterval(updateIndicator, 300);
+      ensureEmptyState();
+      connectMonitor();
+    </script>
+  </body>
+</html>
