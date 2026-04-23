@@ -3,28 +3,25 @@ import asyncio
 import base64
 import json
 import struct
+import threading
 import time
 from typing import Any
 
 import websockets
 
+from config import BARGE_IN_THRESHOLD
+
 CHUNK_SIZE = 1024
 RATE = 16000
 CHANNELS = 1
-BARGE_IN_THRESHOLD = int(__import__('os').getenv("BARGE_IN_THRESHOLD", "300"))
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Realtime STT / Voice Agent client")
+    parser = argparse.ArgumentParser(description="Realtime Voice Agent CLI client")
     parser.add_argument(
         "--url",
-        default="ws://127.0.0.1:8000/ws/transcribe",
+        default="ws://127.0.0.1:8000/ws/agent",
         help="Server websocket endpoint",
-    )
-    parser.add_argument(
-        "--agent",
-        action="store_true",
-        help="Connect to /ws/agent instead of /ws/transcribe",
     )
     return parser.parse_args()
 
@@ -66,11 +63,11 @@ def rms(chunk: bytes) -> float:
     return mean_sq ** 0.5
 
 
-async def run_client(url: str, agent_mode: bool) -> None:
+async def run_client(url: str) -> None:
     import pyaudio
     audio, mic_stream = open_microphone()
-    speaker_stream = open_speaker(audio) if agent_mode else None
-
+    speaker_stream = open_speaker(audio)
+    speaker_lock = threading.Lock()
     is_playing = asyncio.Event()
 
     async with websockets.connect(url, max_size=2**22) as socket:
@@ -81,11 +78,13 @@ async def run_client(url: str, agent_mode: bool) -> None:
             sequence = 0
             while True:
                 chunk = await asyncio.to_thread(mic_stream.read, CHUNK_SIZE, False)
-                if agent_mode and is_playing.is_set():
+                if is_playing.is_set():
                     if rms(chunk) > BARGE_IN_THRESHOLD:
                         is_playing.clear()
-                        if speaker_stream:
-                            speaker_stream.stop_stream()
+                        def _stop() -> None:
+                            with speaker_lock:
+                                speaker_stream.stop_stream()
+                        asyncio.create_task(asyncio.to_thread(_stop))
                         await socket.send(json.dumps({"type": "interrupt"}))
                         print("[BARGE-IN]")
                 payload = {
@@ -108,17 +107,28 @@ async def run_client(url: str, agent_mode: bool) -> None:
 
                 elif t == "agent_start":
                     is_playing.set()
-                    if speaker_stream:
-                        try:
-                            speaker_stream.start_stream()
-                        except Exception:
-                            pass
+                    try:
+                        speaker_stream.start_stream()
+                    except Exception:
+                        pass
                     print("[AGENT] speaking...")
 
-                elif t == "audio_chunk" and speaker_stream:
+                elif t == "audio_chunk":
                     if is_playing.is_set():
                         audio_bytes = base64.b64decode(event.get("audio_b64", ""))
-                        await asyncio.to_thread(speaker_stream.write, audio_bytes)
+                        piece_size = CHUNK_SIZE * 2 * CHANNELS
+                        try:
+                            for i in range(0, len(audio_bytes), piece_size):
+                                if not is_playing.is_set():
+                                    break
+                                piece = audio_bytes[i:i + piece_size]
+                                def _write(p: bytes = piece) -> None:
+                                    with speaker_lock:
+                                        if is_playing.is_set():
+                                            speaker_stream.write(p)
+                                await asyncio.to_thread(_write)
+                        except OSError:
+                            pass
 
                 elif t == "agent_done":
                     is_playing.clear()
@@ -130,6 +140,10 @@ async def run_client(url: str, agent_mode: bool) -> None:
                         f"total={lat.get('total_ms')}ms"
                     )
 
+                elif t == "agent_interrupted":
+                    is_playing.clear()
+                    print("[AGENT] interrupted")
+
                 elif t == "agent_error":
                     print(f"[AGENT ERROR] {event.get('message', '')}")
 
@@ -138,7 +152,6 @@ async def run_client(url: str, agent_mode: bool) -> None:
 
         sender = asyncio.create_task(send_audio())
         receiver = asyncio.create_task(receive_events())
-
         done, pending = await asyncio.wait(
             [sender, receiver],
             return_when=asyncio.FIRST_COMPLETED,
@@ -160,11 +173,8 @@ async def run_client(url: str, agent_mode: bool) -> None:
 
 def main() -> None:
     args = parse_args()
-    url = args.url
-    if args.agent and "/ws/transcribe" in url:
-        url = url.replace("/ws/transcribe", "/ws/agent")
     try:
-        asyncio.run(run_client(url, args.agent))
+        asyncio.run(run_client(args.url))
     except KeyboardInterrupt:
         print("Stopping client...")
 
