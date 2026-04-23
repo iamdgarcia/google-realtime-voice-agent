@@ -1,5 +1,5 @@
 fastapi>=0.136.0
-uvicorn[standard]>=0.45.0
+uvicorn[standard]>=0.46.0
 google-cloud-speech>=2.26.0
 google-genai>=1.73.1
 google-cloud-texttospeech>=2.36.0
